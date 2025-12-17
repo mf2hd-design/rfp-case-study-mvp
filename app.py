@@ -7,6 +7,7 @@ from typing import List
 import pandas as pd
 import streamlit as st
 import requests
+import time
 from docx import Document as DocxDocument
 
 
@@ -139,7 +140,13 @@ def openai_chat_completions(
     user_prompt: str,
     verbosity: str = "low",
     reasoning_effort: str = "high",
+    max_retries: int = 3,
 ) -> str:
+    """
+    Calls OpenAI Chat Completions with:
+    - higher read timeout (high reasoning can exceed 60s on Render)
+    - basic retries with exponential backoff for transient timeouts
+    """
     url = "https://api.openai.com/v1/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     payload = {
@@ -152,18 +159,30 @@ def openai_chat_completions(
         "reasoning_effort": reasoning_effort,
     }
 
-    r = requests.post(url, headers=headers, json=payload, timeout=60)
-    if r.status_code != 200:
-        raise RuntimeError(f"OpenAI API error {r.status_code}: {r.text[:800]}")
-    data = r.json()
-    return data["choices"][0]["message"]["content"].strip()
+    last_err = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            # timeout=(connect_timeout_seconds, read_timeout_seconds)
+            r = requests.post(url, headers=headers, json=payload, timeout=(10, 180))
+            if r.status_code != 200:
+                raise RuntimeError(f"OpenAI API error {r.status_code}: {r.text[:800]}")
+            data = r.json()
+            return data["choices"][0]["message"]["content"].strip()
+        except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout) as e:
+            last_err = e
+        except requests.exceptions.RequestException as e:
+            last_err = e
 
+        # backoff: 1s, 2s, 4s...
+        time.sleep(2 ** (attempt - 1))
+
+    raise RuntimeError(f"OpenAI request failed after {max_retries} attempts: {last_err}")
 
 def build_angles_prompt(rfp_text: str, ranked: pd.DataFrame) -> str:
-    top = ranked.head(12)[["CLIENT", "INDUSTRY", "MARKET", "SERVICES", "PRIORITY"]].fillna("").to_dict(orient="records")
+    top = ranked.head(8)[["CLIENT", "INDUSTRY", "MARKET", "SERVICES", "PRIORITY"]].fillna("").to_dict(orient="records")
     return f"""
 RFP TEXT (excerpt):
-{rfp_text[:4500]}
+{rfp_text[:3000]}
 
 TOP CANDIDATE CASE STUDIES (metadata only):
 {top}
@@ -251,17 +270,23 @@ def main() -> None:
         if not api_key:
             st.warning("OPENAI_API_KEY is not set. Add it in Render → Environment.")
         else:
-            with st.spinner("Generating angles + mapping (GPT‑5.1)…"):
-                prompt = build_angles_prompt(rfp_text, ranked)
-                out = openai_chat_completions(
-                    api_key=api_key,
-                    model=model,
-                    user_prompt=prompt,
-                    verbosity=verbosity,
-                    reasoning_effort=reasoning,
-                )
+            
+with st.spinner("Generating angles + mapping (GPT‑5.1)…"):
+    prompt = build_angles_prompt(rfp_text, ranked)
+    try:
+        out = openai_chat_completions(
+            api_key=api_key,
+            model=model,
+            user_prompt=prompt,
+            verbosity=verbosity,
+            reasoning_effort=reasoning,
+        )
+    except Exception as e:
+        st.error(f"OpenAI call failed: {e}")
+        st.info("Quick fixes: (1) set Reasoning effort to medium, (2) try a smaller RFP excerpt (upload DOCX), (3) retry.")
+        return
 
-            table_start = out.find("| Requirement")
+table_start = out.find("| Requirement")
             bullets = out.strip()
             table_md = ""
             if table_start != -1:
