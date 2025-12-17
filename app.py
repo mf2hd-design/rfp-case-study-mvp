@@ -270,23 +270,22 @@ def main() -> None:
         if not api_key:
             st.warning("OPENAI_API_KEY is not set. Add it in Render → Environment.")
         else:
-            
-with st.spinner("Generating angles + mapping (GPT‑5.1)…"):
-    prompt = build_angles_prompt(rfp_text, ranked)
-    try:
-        out = openai_chat_completions(
-            api_key=api_key,
-            model=model,
-            user_prompt=prompt,
-            verbosity=verbosity,
-            reasoning_effort=reasoning,
-        )
-    except Exception as e:
-        st.error(f"OpenAI call failed: {e}")
-        st.info("Quick fixes: (1) set Reasoning effort to medium, (2) try a smaller RFP excerpt (upload DOCX), (3) retry.")
-        return
+            with st.spinner("Generating angles + mapping (GPT‑5.1)…"):
+                prompt = build_angles_prompt(rfp_text, ranked)
+                try:
+                    out = openai_chat_completions(
+                        api_key=api_key,
+                        model=model,
+                        user_prompt=prompt,
+                        verbosity=verbosity,
+                        reasoning_effort=reasoning,
+                    )
+                except Exception as e:
+                    st.error(f"OpenAI call failed: {e}")
+                    st.info("Quick fixes: (1) set Reasoning effort to medium, (2) upload DOCX instead of scanned PDF, (3) retry.")
+                    return
 
-table_start = out.find("| Requirement")
+            table_start = out.find("| Requirement")
             bullets = out.strip()
             table_md = ""
             if table_start != -1:
